@@ -1,18 +1,19 @@
-From 3f39401a3876f766e2fed60d86977c9dfbf03e52 Mon Sep 17 00:00:00 2001
+From 9f93caec3a142297b75d0d87d683fc569d89274a Mon Sep 17 00:00:00 2001
 From: Troy Lee <troy_lee@aspeedtech.com>
 Date: Mon, 16 Jan 2023 14:03:36 +0800
 Subject: [PATCH] Enabling MCTP over Kernel Socket
 
 Signed-off-by: Troy Lee <troy_lee@aspeedtech.com>
+
 ---
- spdm_emu/spdm_emu_common/command.c            | 122 +++++++++++-------
+ spdm_emu/spdm_emu_common/command.c            | 140 ++++++------------
  spdm_emu/spdm_requester_emu/CMakeLists.txt    |   1 +
  spdm_emu/spdm_responder_emu/CMakeLists.txt    |   1 +
- .../spdm_responder_emu/spdm_responder_emu.c   |  21 ++-
- 4 files changed, 88 insertions(+), 57 deletions(-)
+ .../spdm_responder_emu/spdm_responder_emu.c   |  39 ++---
+ 4 files changed, 54 insertions(+), 127 deletions(-)
 
 diff --git a/spdm_emu/spdm_emu_common/command.c b/spdm_emu/spdm_emu_common/command.c
-index 49028ae..c9ce31d 100644
+index 49028ae..00850c5 100644
 --- a/spdm_emu/spdm_emu_common/command.c
 +++ b/spdm_emu/spdm_emu_common/command.c
 @@ -8,8 +8,9 @@
@@ -26,13 +27,11 @@ index 49028ae..c9ce31d 100644
  
  bool m_send_receive_buffer_acquired = false;
  uint8_t m_send_receive_buffer[LIBSPDM_SENDER_RECEIVE_BUFFER_SIZE];
-@@ -21,16 +22,25 @@ size_t m_send_receive_buffer_size;
+@@ -21,30 +22,30 @@ size_t m_send_receive_buffer_size;
   * If there is no enough data in socket, this function will wait.
   * This function will return if enough data is read, or socket error.
   **/
 +struct sockaddr_mctp my_address;
-+// struct sockaddr_mctp addr;
-+socklen_t addrlen;
  bool read_bytes(const SOCKET socket, uint8_t *buffer,
 -                uint32_t number_of_bytes)
 +                uint32_t number_of_bytes, uint32_t *recv_bytes)
@@ -44,32 +43,40 @@ index 49028ae..c9ce31d 100644
 -    while (number_received < number_of_bytes) {
 -        result = recv(socket, (char *)(buffer + number_received),
 -                      number_of_bytes - number_received, 0);
-+    //uint32_t number_received;
-+
-+    // number_received = 0;
-+    // while (number_received < number_of_bytes) {
-+        addrlen = sizeof(my_address);
-+        result = recvfrom(socket, (char *)(buffer),
-+                      number_of_bytes, MSG_TRUNC,
-+                      &my_address, &addrlen);
-+        *recv_bytes = result;
-+        printf("message (%zd bytes) from remote EID 0x%02x\n", result, my_address.smctp_addr);
-+        // result = recv(socket, (char *)(buffer + number_received),
-+        //               number_of_bytes - number_received, 0);
-         if (result == -1) {
-             printf("Receive error - 0x%x\n",
+-        if (result == -1) {
+-            printf("Receive error - 0x%x\n",
++    socklen_t addrlen;
++    addrlen = sizeof(my_address);
++    result = recvfrom(socket, (char *)(buffer),
++            number_of_bytes, MSG_TRUNC,
++            &my_address, &addrlen);
++    *recv_bytes = result;
++    printf("message (%zd bytes) from remote EID 0x%02x\n", result, my_address.smctp_addr);
++    if (result == -1) {
++        printf("Receive error - 0x%x\n",
  #ifdef _MSC_VER
-@@ -44,16 +54,16 @@ bool read_bytes(const SOCKET socket, uint8_t *buffer,
-         if (result == 0) {
-             return false;
-         }
+-                   WSAGetLastError()
++                WSAGetLastError()
+ #else
+-                   errno
++                errno
+ #endif
+-                   );
+-            return false;
+-        }
+-        if (result == 0) {
+-            return false;
+-        }
 -        number_received += result;
--    }
-+        //number_received += result;
-+    //}
++              );
++        return false;
++    }
++    if (result == 0) {
++        return false;
+     }
      return true;
  }
- 
+@@ -52,8 +53,8 @@ bool read_bytes(const SOCKET socket, uint8_t *buffer,
  bool read_data32(const SOCKET socket, uint32_t *data)
  {
      bool result;
@@ -80,27 +87,25 @@ index 49028ae..c9ce31d 100644
      if (!result) {
          return result;
      }
-@@ -76,7 +86,7 @@ bool read_multiple_bytes(const SOCKET socket, uint8_t *buffer,
- {
+@@ -77,17 +78,6 @@ bool read_multiple_bytes(const SOCKET socket, uint8_t *buffer,
      uint32_t length;
      bool result;
--
-+/*
-     result = read_data32(socket, &length);
-     if (!result) {
-         return result;
-@@ -86,8 +96,8 @@ bool read_multiple_bytes(const SOCKET socket, uint8_t *buffer,
-     dump_data((uint8_t *)&length, sizeof(uint32_t));
-     printf("\n");
-     length = ntohl(length);
+ 
+-    result = read_data32(socket, &length);
+-    if (!result) {
+-        return result;
+-    }
+-    printf("Platform port Receive size: ");
+-    length = ntohl(length);
+-    dump_data((uint8_t *)&length, sizeof(uint32_t));
+-    printf("\n");
+-    length = ntohl(length);
 -
 -    *bytes_received = length;
-+*/
-+    length = 256;
      if (*bytes_received > max_buffer_length) {
          printf("buffer too small (0x%x). Expected - 0x%x\n",
                 max_buffer_length, *bytes_received);
-@@ -96,7 +106,8 @@ bool read_multiple_bytes(const SOCKET socket, uint8_t *buffer,
+@@ -96,7 +86,8 @@ bool read_multiple_bytes(const SOCKET socket, uint8_t *buffer,
      if (length == 0) {
          return true;
      }
@@ -110,39 +115,38 @@ index 49028ae..c9ce31d 100644
      if (!result) {
          return result;
      }
-@@ -115,17 +126,20 @@ bool receive_platform_data(const SOCKET socket, uint32_t *command,
-     uint32_t response;
+@@ -116,29 +107,7 @@ bool receive_platform_data(const SOCKET socket, uint32_t *command,
      uint32_t transport_type;
      uint32_t bytes_received;
--
-+/*
-     result = read_data32(socket, &response);
-     if (!result) {
-         return result;
-     }
--    *command = response;
-+*/  
-+    *command = SOCKET_SPDM_COMMAND_NORMAL;
-+/*
-     printf("Platform port Receive command: ");
-     response = ntohl(response);
-     dump_data((uint8_t *)&response, sizeof(uint32_t));
-     printf("\n");
  
-+    transport_type = 0;
-     result = read_data32(socket, &transport_type);
-     if (!result) {
-         return result;
-@@ -139,7 +153,7 @@ bool receive_platform_data(const SOCKET socket, uint32_t *command,
-         printf("transport_type mismatch\n");
-         return false;
-     }
+-    result = read_data32(socket, &response);
+-    if (!result) {
+-        return result;
+-    }
+-    *command = response;
+-    printf("Platform port Receive command: ");
+-    response = ntohl(response);
+-    dump_data((uint8_t *)&response, sizeof(uint32_t));
+-    printf("\n");
 -
-+*/
+-    result = read_data32(socket, &transport_type);
+-    if (!result) {
+-        return result;
+-    }
+-    printf("Platform port Receive transport_type: ");
+-    transport_type = ntohl(transport_type);
+-    dump_data((uint8_t *)&transport_type, sizeof(uint32_t));
+-    printf("\n");
+-    transport_type = ntohl(transport_type);
+-    if (transport_type != m_use_transport_layer) {
+-        printf("transport_type mismatch\n");
+-        return false;
+-    }
++    *command = SOCKET_SPDM_COMMAND_NORMAL;
+ 
      bytes_received = 0;
      result = read_multiple_bytes(socket, receive_buffer, &bytes_received,
-                                  (uint32_t)*bytes_to_receive);
-@@ -186,10 +200,18 @@ bool write_bytes(const SOCKET socket, const uint8_t *buffer,
+@@ -186,30 +155,34 @@ bool write_bytes(const SOCKET socket, const uint8_t *buffer,
      int32_t result;
      uint32_t number_sent;
  
@@ -152,28 +156,45 @@ index 49028ae..c9ce31d 100644
 -    while (number_sent < number_of_bytes) {
 -        result = send(socket, (char *)(buffer + number_sent),
 -                      number_of_bytes - number_sent, 0);
-+    //while (number_sent < number_of_bytes) {
-+        my_address.smctp_tag &= ~MCTP_TAG_OWNER;
-+        //my_address.smctp_addr.s_addr = 0x0b;
-+        dump_data(buffer, number_of_bytes);
-+        printf("\n");
-+        result = sendto(socket, (buffer),
-+                      number_of_bytes, 0, (struct sockaddr *)&my_address, sizeof(my_address));
-+        // result = send(socket, (char *)(buffer + number_sent),
-+        //               number_of_bytes - number_sent, 0);
-         if (result == -1) {
+-        if (result == -1) {
++    my_address.smctp_tag &= ~MCTP_TAG_OWNER;
++    dump_data(buffer, number_of_bytes);
++    printf("\n");
++    result = sendto(socket, (buffer),
++            number_of_bytes, 0, (struct sockaddr *)&my_address, sizeof(my_address));
++    if (result == -1) {
  #ifdef _MSC_VER
-             if (WSAGetLastError() == 0x2745) {
-@@ -209,7 +231,7 @@ bool write_bytes(const SOCKET socket, const uint8_t *buffer,
-             return false;
+-            if (WSAGetLastError() == 0x2745) {
+-                printf("Client disconnected\n");
+-            } else {
++        if (WSAGetLastError() == 0x2745) {
++            printf("Client disconnected\n");
++        } else {
+ #endif
+             printf("Send error - 0x%x\n",
+ #ifdef _MSC_VER
+-                   WSAGetLastError()
++                    WSAGetLastError()
+ #else
+-                   errno
++                    errno
+ #endif
+-                   );
++                  );
+ #ifdef _MSC_VER
          }
-         number_sent += result;
--    }
-+    //}
+ #endif
+-            return false;
+-        }
+-        number_sent += result;
++        return false;
+     }
++    number_sent += result;
++
      return true;
  }
  
-@@ -230,15 +252,15 @@ bool write_multiple_bytes(const SOCKET socket, const uint8_t *buffer,
+@@ -230,16 +203,6 @@ bool write_multiple_bytes(const SOCKET socket, const uint8_t *buffer,
  {
      bool result;
  
@@ -186,19 +207,11 @@ index 49028ae..c9ce31d 100644
 -    dump_data((uint8_t *)&bytes_to_send, sizeof(uint32_t));
 -    printf("\n");
 -    bytes_to_send = htonl(bytes_to_send);
-+    // result = write_data32(socket, bytes_to_send);
-+    // if (!result) {
-+    //     return result;
-+    // }
-+    // printf("Platform port Transmit size: ");
-+    // bytes_to_send = htonl(bytes_to_send);
-+    // dump_data((uint8_t *)&bytes_to_send, sizeof(uint32_t));
-+    // printf("\n");
-+    // bytes_to_send = htonl(bytes_to_send);
- 
+-
      result = write_bytes(socket, buffer, bytes_to_send);
      if (!result) {
-@@ -257,24 +279,24 @@ bool send_platform_data(const SOCKET socket, uint32_t command,
+         return result;
+@@ -257,25 +220,6 @@ bool send_platform_data(const SOCKET socket, uint32_t command,
      uint32_t request;
      uint32_t transport_type;
  
@@ -220,27 +233,10 @@ index 49028ae..c9ce31d 100644
 -    transport_type = ntohl(m_use_transport_layer);
 -    dump_data((uint8_t *)&transport_type, sizeof(uint32_t));
 -    printf("\n");
-+    // request = command;
-+    // result = write_data32(socket, request);
-+    // if (!result) {
-+    //     return result;
-+    // }
-+    // printf("Platform port Transmit command: ");
-+    // request = htonl(request);
-+    // dump_data((uint8_t *)&request, sizeof(uint32_t));
-+    // printf("\n");
-+
-+    // result = write_data32(socket, m_use_transport_layer);
-+    // if (!result) {
-+    //     return result;
-+    // }
-+    // printf("Platform port Transmit transport_type: ");
-+    // transport_type = ntohl(m_use_transport_layer);
-+    // dump_data((uint8_t *)&transport_type, sizeof(uint32_t));
-+    // printf("\n");
- 
+-
      result = write_multiple_bytes(socket, send_buffer,
                                    (uint32_t)bytes_to_send);
+     if (!result) {
 diff --git a/spdm_emu/spdm_requester_emu/CMakeLists.txt b/spdm_emu/spdm_requester_emu/CMakeLists.txt
 index b8340e3..033b239 100644
 --- a/spdm_emu/spdm_requester_emu/CMakeLists.txt
@@ -262,7 +258,7 @@ index ca57c05..59638be 100644
 +    INSTALL(TARGETS spdm_responder_emu DESTINATION bin)
  endif()
 diff --git a/spdm_emu/spdm_responder_emu/spdm_responder_emu.c b/spdm_emu/spdm_responder_emu/spdm_responder_emu.c
-index 649b0a1..5db86fd 100644
+index 649b0a1..ddb0f16 100644
 --- a/spdm_emu/spdm_responder_emu/spdm_responder_emu.c
 +++ b/spdm_emu/spdm_responder_emu/spdm_responder_emu.c
 @@ -5,6 +5,7 @@
@@ -293,19 +289,20 @@ index 649b0a1..5db86fd 100644
      if (INVALID_SOCKET == *listen_socket) {
          printf("Cannot create server listen socket.  Error is 0x%x\n",
  #ifdef _MSC_VER
-@@ -50,6 +51,7 @@ bool create_socket(uint16_t port_number, SOCKET *listen_socket)
+@@ -50,20 +51,11 @@ bool create_socket(uint16_t port_number, SOCKET *listen_socket)
       * be restarted since it cannot bind to its port.
       * To prevent this SO_REUSEADDR is applied to the socket which allows the
       * responder to bind to this port even if it is still in the TIME_WAIT state.*/
-+#if 0
-     if (setsockopt(*listen_socket, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0) {
-         printf("Cannot configure server listen socket.  Error is 0x%x\n",
- #ifdef _MSC_VER
-@@ -60,10 +62,12 @@ bool create_socket(uint16_t port_number, SOCKET *listen_socket)
-                );
-         return false;
-     }
-+#endif
+-    if (setsockopt(*listen_socket, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0) {
+-        printf("Cannot configure server listen socket.  Error is 0x%x\n",
+-#ifdef _MSC_VER
+-               WSAGetLastError()
+-#else
+-               errno
+-#endif
+-               );
+-        return false;
+-    }
  
      libspdm_zero_mem(&my_address, sizeof(my_address));
 -    my_address.sin_port = htons((short)port_number);
@@ -316,23 +313,26 @@ index 649b0a1..5db86fd 100644
  
      res = bind(*listen_socket, (struct sockaddr *)&my_address,
                 sizeof(my_address));
-@@ -79,6 +83,7 @@ bool create_socket(uint16_t port_number, SOCKET *listen_socket)
+@@ -79,18 +71,6 @@ bool create_socket(uint16_t port_number, SOCKET *listen_socket)
          return false;
      }
  
-+#if 0
-     res = listen(*listen_socket, 3);
-     if (res == SOCKET_ERROR) {
-         printf("Listen error.  Error is 0x%x\n",
-@@ -91,6 +96,7 @@ bool create_socket(uint16_t port_number, SOCKET *listen_socket)
-         closesocket(*listen_socket);
-         return false;
-     }
-+#endif
+-    res = listen(*listen_socket, 3);
+-    if (res == SOCKET_ERROR) {
+-        printf("Listen error.  Error is 0x%x\n",
+-#ifdef _MSC_VER
+-               WSAGetLastError()
+-#else
+-               errno
+-#endif
+-               );
+-        closesocket(*listen_socket);
+-        return false;
+-    }
      return true;
  }
  
-@@ -251,9 +257,10 @@ bool platform_server_routine(uint16_t port_number)
+@@ -251,9 +231,10 @@ bool platform_server_routine(uint16_t port_number)
          printf("Platform server listening on port %d\n", port_number);
  
          length = sizeof(peer_address);
