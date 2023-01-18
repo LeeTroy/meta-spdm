@@ -1,0 +1,36 @@
+From 85a8ea4fde752829733ba64ae146e222b4082ece Mon Sep 17 00:00:00 2001
+From: Troy Lee <troy_lee@aspeedtech.com>
+Date: Wed, 18 Jan 2023 16:00:00 +0800
+Subject: [PATCH] mac: fix udp performance issue
+
+Signed-off-by: Troy Lee <troy_lee@aspeedtech.com>
+---
+ drivers/net/ethernet/faraday/ftgmac100.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/drivers/net/ethernet/faraday/ftgmac100.c b/drivers/net/ethernet/faraday/ftgmac100.c
+index 22b05d01cdc1..16915f844036 100644
+--- a/drivers/net/ethernet/faraday/ftgmac100.c
++++ b/drivers/net/ethernet/faraday/ftgmac100.c
+@@ -828,6 +828,21 @@ static netdev_tx_t ftgmac100_hard_start_xmit(struct sk_buff *skb,
+ 			netif_wake_queue(netdev);
+ 	}
+ 
++	/* When sending UDP packets, we may never receive a packet to activate
++	 * the NAPI BH. And hence we don't have chance to free the TX data.
++	 * The workaround is to enable FTGMAC100_INT_XPKT_ETH, then the NAPI BH
++	 * can be woke up in the ISR.
++	 */
++	if (skb->protocol == (cpu_to_be16(ETH_P_IP)) &&
++	    (ip_hdr(skb)->protocol == IPPROTO_UDP)) {
++		u32 ier = ioread32(priv->base + FTGMAC100_OFFSET_IER);
++
++		/* IER == FTGMAC100_INT_ALL implies NAPI is not running */
++		if (ier == FTGMAC100_INT_ALL)
++			iowrite32(ier | FTGMAC100_INT_XPKT_ETH,
++				  priv->base + FTGMAC100_OFFSET_IER);
++	}
++
+ 	/* Poke transmitter to read the updated TX descriptors */
+ 	iowrite32(1, priv->base + FTGMAC100_OFFSET_NPTXPD);
+ 
